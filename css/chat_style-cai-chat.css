@@ -1,7 +1,9 @@
 .message {
     display: grid;
+    align-items: start;
     grid-template-columns: 60px minmax(0, 1fr);
-    padding-bottom: 15px;
+    padding-bottom: 1.5em;
+    padding-top: 0.5em;
     font-size: 15px;
     font-family: 'Noto Sans', Helvetica, Arial, sans-serif;
     line-height: 22.5px !important;
@@ -9,6 +11,7 @@
 
 .message-body {
     margin-top: 3px;
+    font-size: 15px !important;
 }
 
 .circle-you {

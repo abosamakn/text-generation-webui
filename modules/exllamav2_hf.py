@@ -9,11 +9,18 @@ from exllamav2 import (
     ExLlamaV2Cache,
     ExLlamaV2Cache_8bit,
     ExLlamaV2Cache_Q4,
+    ExLlamaV2Cache_Q6,
+    ExLlamaV2Cache_Q8,
     ExLlamaV2Cache_TP,
     ExLlamaV2Config
 )
 from torch.nn import CrossEntropyLoss
-from transformers import GenerationConfig, PretrainedConfig, PreTrainedModel
+from transformers import (
+    GenerationConfig,
+    GenerationMixin,
+    PretrainedConfig,
+    PreTrainedModel
+)
 from transformers.modeling_outputs import CausalLMOutputWithPast
 
 from modules import shared
@@ -26,7 +33,7 @@ except Exception:
     traceback.print_exc()
 
 
-class Exllamav2HF(PreTrainedModel):
+class Exllamav2HF(PreTrainedModel, GenerationMixin):
     def __init__(self, config: ExLlamaV2Config):
         super().__init__(PretrainedConfig())
         self.ex_config = config
@@ -45,12 +52,20 @@ class Exllamav2HF(PreTrainedModel):
             self.ex_model.load(split)
 
         # Determine the correct cache type
-        if shared.args.cache_8bit:
+        kv_cache_type = shared.args.cache_type.lower()
+
+        if kv_cache_type == 'fp16':
+            cache_type = ExLlamaV2Cache
+        elif kv_cache_type == 'fp8':
             cache_type = ExLlamaV2Cache_8bit
-        elif shared.args.cache_4bit:
+        elif kv_cache_type == 'q8':
+            cache_type = ExLlamaV2Cache_Q8
+        elif kv_cache_type == 'q6':
+            cache_type = ExLlamaV2Cache_Q6
+        elif kv_cache_type == 'q4':
             cache_type = ExLlamaV2Cache_Q4
         else:
-            cache_type = ExLlamaV2Cache
+            raise ValueError(f"Invalid cache type for ExLlamaV2: {kv_cache_type}. Valid options are: fp16, fp8, q8, q6, q4.")
 
         # Use TP if specified
         if shared.args.enable_tp:
@@ -63,12 +78,10 @@ class Exllamav2HF(PreTrainedModel):
 
         self.past_seq = None
         if shared.args.cfg_cache:
-            if shared.args.cache_8bit:
-                self.ex_cache_negative = ExLlamaV2Cache_8bit(self.ex_model)
-            elif shared.args.cache_4bit:
-                self.ex_cache_negative = ExLlamaV2Cache_Q4(self.ex_model)
+            if shared.args.enable_tp:
+                self.ex_cache_negative = ExLlamaV2Cache_TP(self.ex_model, base=cache_type)
             else:
-                self.ex_cache_negative = ExLlamaV2Cache(self.ex_model)
+                self.ex_cache_negative = cache_type(self.ex_model, lazy=shared.args.autosplit)
 
             self.past_seq_negative = None
 
@@ -147,6 +160,9 @@ class Exllamav2HF(PreTrainedModel):
         else:
             self.past_seq = seq_tensor
 
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+
         loss = None
         if labels is not None:
             # Shift so that tokens < n predict n
@@ -174,7 +190,7 @@ class Exllamav2HF(PreTrainedModel):
         config.model_dir = str(pretrained_model_name_or_path)
         config.prepare()
 
-        config.max_seq_len = shared.args.max_seq_len
+        config.max_seq_len = shared.args.ctx_size
         config.scale_pos_emb = shared.args.compress_pos_emb
         config.scale_alpha_value = shared.args.alpha_value
         config.no_flash_attn = shared.args.no_flash_attn
